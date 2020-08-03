@@ -1,70 +1,106 @@
 import torch
-from torch import nn
-from torch import optim 
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+import torchvision.transforms as transforms
 
-from pydoc import locate
+import torchvision.datasets as datasets
+import torchvision.models as models
+
+
+
+import sklearn.decomposition as decomposition
+import sklearn.manifold as manifold
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import ConfusionMatrixDisplay
+
 import matplotlib.pyplot as plt
+import numpy as np
+
+
 import numpy as np
 import argparse
 import os
+import shutil
+import time
+import random
+
+
+import copy
+
+from collections import namedtuple
+
+
+
+
 import skimage
+
+from pydoc import locate
+from torch.utils.data import Dataset, DataLoader
 from utils import measure_time
 
     
 def train():
-    """
-    # Creating dataset and dataloader
-    with measure_time("Creating datasets"):
-        dataset = PYTORCH_DATASET(PATH, PYTORCH_TRANSFORMS)
-        dataloader = PYTORCH_DATALOADER(dataset, batch_size=BATCH_SIZE,
-                                        shuffle=True, num_workers=4)
-    """
-    """
-    # Fetching class names
-    superclass_names = dataset.superclasses
-    subclass_names = dataset.subclasses
+    pass
 
-    # Creating neural network, criterion and optimizer
-    net = PYTORCH_MODEL()
-    net.to(DEVICE)
-    
+def split_dataset(source_path, destination_path, test_dir_name, train_dir_name):
+    TRAIN_RATIO = 0.8
+    train_dir = os.path.join(destination_path, train_dir_name)
+    test_dir = os.path.join(destination_path, test_dir_name)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    # Deleting train and test directories if they exist
+    if os.path.exists(train_dir):
+        shutil.rmtree(train_dir) 
+    if os.path.exists(test_dir):
+        shutil.rmtree(test_dir)
 
+    # Creating directories
+    os.makedirs(train_dir)
+    os.makedirs(test_dir)
 
-    # Training the model
-    net.train()
-    for epoch in range(EPOCHS):
-        running_loss = 0.0
-        for i, data in enumerate(dataloader):
+    classes = os.listdir(source_path)
 
+    for c in classes:
+        
+        class_dir = os.path.join(source_path, c)
+        
+        images = os.listdir(class_dir)
+        
+        n_train = int(len(images) * TRAIN_RATIO)
+        
+        train_images = images[:n_train]
+        test_images = images[n_train:]
+        
+        os.makedirs(os.path.join(train_dir, c), exist_ok = True)
+        os.makedirs(os.path.join(test_dir, c), exist_ok = True)
+
+        
+        for image in train_images:
+            image_src = os.path.join(class_dir, image)
+            image_dst = os.path.join(train_dir, c, image) 
+            shutil.copyfile(image_src, image_dst)
             
+        for image in test_images:
+            image_src = os.path.join(class_dir, image)
+            image_dst = os.path.join(test_dir, c, image) 
+            shutil.copyfile(image_src, image_dst)
 
-            #print(data)
-            inputs = data["image"].to(DEVICE)
-            super_classes = data["superclass"]
-            sub_classes = data["subclass"]
-            
-            outputs = net(inputs)
-            
-            i += 1
-            print(inputs.size())
-            print(outputs.size())
-            if(i == 100):
-                exit(0)
-    """
+def std_mean(train_dir):
+    train_data = datasets.ImageFolder(root = train_dir, 
+                                    transform = transforms.ToTensor())
 
-    """
-    if DEVICE.type == 'cuda':
-        print(torch.cuda.get_device_name(0))
-        print('Memory Usage:')
-        print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
-        print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**3,1), 'GB')
-    """
+    means = torch.zeros(3)
+    stds = torch.zeros(3)
 
+    for img, label in train_data:
+        print(label)
+        means += torch.mean(img, dim = (1,2))
+        stds += torch.std(img, dim = (1,2))
+
+    means /= len(train_data)
+    stds /= len(train_data)
+    return means, stds
 
 if __name__ == "__main__":
     # Parsing arguments and setting up metadata
@@ -101,7 +137,16 @@ if __name__ == "__main__":
                         help="CNN model used")
     parser.add_argument("--weight",
                         default=None,
-                        help="path to the weights of the model")
+                        help="Path to the weights of the model")
+    parser.add_argument("--split",
+                        default=False,
+                        help="Whether the dataset is split on disk")
+    parser.add_argument("--split-ratio",
+                        default=0.8,
+                        help="The test/train ratio")
+    parser.add_argument("--stats",
+                        default=False,
+                        help="Whether to compute means and stds or not")
 
     # Add more stuff here maybe ?
     args = parser.parse_args()
@@ -110,27 +155,32 @@ if __name__ == "__main__":
 
     # Checking if gpu is available
     global_vars["DEVICE"] = torch.device("cuda:0" if torch.cuda.is_available() and args.gpu == 'y' else "cpu")
+    global_vars["DATA_PATH"] = args.path
+
+    # Kiode bizarre - for reproducability
+    SEED = 1234
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed(SEED)
+    torch.backends.cudnn.deterministic = True
+
+    data_dir = os.path.join('.', DATA_PATH)
+    images_dir = os.path.join(data_dir, 'images')
+    train_dir = os.path.join(data_dir, 'train')
+    test_dir = os.path.join(data_dir, 'test')
+
+    if args.split:
+        with measure_time("Splitting dataset"):
+            split_dataset(images_dir, data_dir, 'test', 'train')
+    
 
 
-    """
-    # Setting global variables
-    global_vars["PATH"] = args.path
-    global_vars["BATCH_SIZE"] = args.batch
-    global_vars["EPOCHS"] = args.epochs
-    global_vars["STEPS_PER_EPOCH"] = args.steps
+    if args.stats:
+        with measure_time("Computing means and stds"):
+            means, std = std_mean(train_dir)
+            
+        print(f'Calculated means: {means}')
+        print(f'Calculated stds: {stds}')
 
-    # Loading custom classes
-    global_vars["PYTORCH_DATASET"] = locate("pipeline.pytorch_datasets."
-                                          + args.dataset + "." + args.dataset)
-
-    if args.dataloader:
-        global_vars["PYTORCH_DATALOADER"] = locate(
-            "pipeline.pytorch_dataloader." + args.dataloader + "." + args.dataloader)
-    else:
-        global_vars["PYTORCH_DATALOADER"] = DataLoader
-
-    global_vars["PYTORCH_TRANSFORMS"] = locate(
-        "pipeline.pytorch_transforms." + args.transforms + "." + args.transforms)
-    global_vars["PYTORCH_MODEL"] = locate("models." + args.model + "." + args.model)
-    """
     train()
