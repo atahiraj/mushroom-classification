@@ -36,6 +36,8 @@ from pydoc import locate
 from torch.utils.data import Dataset, DataLoader
 from utils import measure_time
 
+from model import *
+
     
 def train():
     pass
@@ -154,9 +156,28 @@ def prepare_training(train_dir, test_dir):
 
     test_iterator = data.DataLoader(test_data, 
                                     batch_size = BATCH_SIZE)
+    #show_img(train_data, test_data)
+
+    ResNetConfig = namedtuple('ResNetConfig', ['block', 'n_blocks', 'channels'])
+    resnet152_config = ResNetConfig(block = Bottleneck,
+                                n_blocks = [3, 8, 36, 3],
+                                channels = [64, 128, 256, 512])
+    pretrained_model = models.resnet152(pretrained = True)
+
+    IN_FEATURES = pretrained_model.fc.in_features 
+    OUTPUT_DIM = len(test_data.classes)
+
+    fc = nn.Linear(IN_FEATURES, OUTPUT_DIM)
+
+    pretrained_model.fc = fc
+
+    model = ResNet(resnet152_config, OUTPUT_DIM)
+    model.load_state_dict(pretrained_model.state_dict())
+
+    print(f'The model has {count_parameters(model):,} trainable parameters')
 
 
-def show_img(): 
+def show_img(train_data, test_data): 
     N_IMAGES = 25
 
     images, labels = zip(*[(image, label) for image, label in 
