@@ -94,13 +94,105 @@ def std_mean(train_dir):
     stds = torch.zeros(3)
 
     for img, label in train_data:
-        print(label)
         means += torch.mean(img, dim = (1,2))
         stds += torch.std(img, dim = (1,2))
 
     means /= len(train_data)
     stds /= len(train_data)
     return means, stds
+    
+def prepare_training():
+#data augmentation: randomly rotating, flipping horizontally and cropping.
+    size = 224
+    means = []#MEANS
+    stds= []#MEANS
+
+    train_transforms = transforms.Compose([
+                               transforms.Resize(pretrained_size),
+                               transforms.RandomRotation(5),
+                               transforms.RandomHorizontalFlip(0.5),
+                               transforms.RandomCrop(pretrained_size, padding = 10),
+                               transforms.ToTensor(),
+                               transforms.Normalize(mean = means, 
+                                                    std = stds)
+                           ])
+
+    test_transforms = transforms.Compose([
+                               transforms.Resize(pretrained_size),
+                               transforms.CenterCrop(pretrained_size),
+                               transforms.ToTensor(),
+                               transforms.Normalize(mean = means, 
+                                                    std = stds)
+                           ])
+    
+    train_data = datasets.ImageFolder(root = train_dir, 
+                                  transform = train_transforms)
+
+    test_data = datasets.ImageFolder(root = test_dir, 
+                                 transform = test_transforms)
+                                 
+                                 
+    #create the validation set
+    VALID_RATIO = 0.9
+
+    n_train_examples = int(len(train_data) * VALID_RATIO)
+    n_valid_examples = len(train_data) - n_train_examples
+
+    train_data, valid_data = data.random_split(train_data, 
+                                               [n_train_examples, n_valid_examples])
+                                               
+    valid_data = copy.deepcopy(valid_data) #deepcopy to stop this also changing the training data transforms
+    
+    #POURQUOI ????????????????????????????????????????????????????????????
+    valid_data.dataset.transform = test_transforms 
+    #POURQUOI ????????????????????????????????????????????????????????????
+    
+    BATCH_SIZE = 64
+
+    train_iterator = data.DataLoader(train_data, 
+                                     shuffle = True, 
+                                     batch_size = BATCH_SIZE)
+
+    valid_iterator = data.DataLoader(valid_data, 
+                                     batch_size = BATCH_SIZE)
+
+    test_iterator = data.DataLoader(test_data, 
+                                    batch_size = BATCH_SIZE)
+                                    
+                                    
+    #To ensure the images have been processed correctly we can plot a few of them - ensuring we re-normalize the images so their colors look right.
+
+    def normalize_image(image):
+        image_min = image.min()
+        image_max = image.max()
+        image.clamp_(min = image_min, max = image_max)
+        image.add_(-image_min).div_(image_max - image_min + 1e-5)
+        return image
+        
+    def plot_images(images, labels, classes, normalize = True):
+
+        n_images = len(images)
+
+        rows = int(np.sqrt(n_images))
+        cols = int(np.sqrt(n_images))
+
+        fig = plt.figure(figsize = (15, 15))
+
+        for i in range(rows*cols):
+
+            ax = fig.add_subplot(rows, cols, i+1)
+            
+            image = images[i]
+
+            if normalize:
+                image = normalize_image(image)
+
+            ax.imshow(image.permute(1, 2, 0).cpu().numpy())
+            label = classes[labels[i]]
+            ax.set_title(label)
+            ax.axis('off')
+        
+
 
 if __name__ == "__main__":
     # Parsing arguments and setting up metadata
@@ -147,6 +239,9 @@ if __name__ == "__main__":
     parser.add_argument("--stats",
                         default=False,
                         help="Whether to compute means and stds or not")
+    parser.add_argument("--train",
+                        default=False,
+                        help="Whether the data needs to be trained")
 
     # Add more stuff here maybe ?
     args = parser.parse_args()
@@ -178,9 +273,15 @@ if __name__ == "__main__":
 
     if args.stats:
         with measure_time("Computing means and stds"):
-            means, std = std_mean(train_dir)
+            means, stds = std_mean(train_dir)
             
         print(f'Calculated means: {means}')
         print(f'Calculated stds: {stds}')
-
-    train()
+        global_vars["MEANS"] = means 
+        global_vars["STDS"] = stds
+        
+    if args.train:
+        prepare_training()
+    
+    
+   
