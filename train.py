@@ -4,11 +4,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 import torchvision.transforms as transforms
+import torch.utils.data as data
 
 import torchvision.datasets as datasets
 import torchvision.models as models
-
-
 
 import sklearn.decomposition as decomposition
 import sklearn.manifold as manifold
@@ -30,9 +29,6 @@ import random
 import copy
 
 from collections import namedtuple
-
-
-
 
 import skimage
 
@@ -101,25 +97,25 @@ def std_mean(train_dir):
     stds /= len(train_data)
     return means, stds
     
-def prepare_training():
+def prepare_training(train_dir, test_dir):
 #data augmentation: randomly rotating, flipping horizontally and cropping.
     size = 224
-    means = []#MEANS
-    stds= []#MEANS
+    means = [0.4459, 0.4182, 0.3441]
+    stds = [0.2210, 0.2137, 0.2109]
 
     train_transforms = transforms.Compose([
-                               transforms.Resize(pretrained_size),
+                               transforms.Resize(size),
                                transforms.RandomRotation(5),
                                transforms.RandomHorizontalFlip(0.5),
-                               transforms.RandomCrop(pretrained_size, padding = 10),
+                               transforms.RandomCrop(size, padding = 10),
                                transforms.ToTensor(),
                                transforms.Normalize(mean = means, 
                                                     std = stds)
                            ])
 
     test_transforms = transforms.Compose([
-                               transforms.Resize(pretrained_size),
-                               transforms.CenterCrop(pretrained_size),
+                               transforms.Resize(size),
+                               transforms.CenterCrop(size),
                                transforms.ToTensor(),
                                transforms.Normalize(mean = means, 
                                                     std = stds)
@@ -158,40 +154,107 @@ def prepare_training():
 
     test_iterator = data.DataLoader(test_data, 
                                     batch_size = BATCH_SIZE)
-                                    
-                                    
-    #To ensure the images have been processed correctly we can plot a few of them - ensuring we re-normalize the images so their colors look right.
 
-    def normalize_image(image):
-        image_min = image.min()
-        image_max = image.max()
-        image.clamp_(min = image_min, max = image_max)
-        image.add_(-image_min).div_(image_max - image_min + 1e-5)
-        return image
+
+def show_img(): 
+    N_IMAGES = 25
+
+    images, labels = zip(*[(image, label) for image, label in 
+                               [train_data[i] for i in range(N_IMAGES)]])
+
+    classes = test_data.classes
+    plot_images(images, labels, classes)
+
+def normalize_image(image):
+    image_min = image.min()
+    image_max = image.max()
+    image.clamp_(min = image_min, max = image_max)
+    image.add_(-image_min).div_(image_max - image_min + 1e-5)
+    return image
+    
+def plot_images(images, labels, classes, normalize = True):
+    n_images = len(images)
+
+    rows = int(np.sqrt(n_images))
+    cols = int(np.sqrt(n_images))
+
+    fig = plt.figure(figsize = (15, 15))
+
+    for i in range(rows*cols):
+
+        ax = fig.add_subplot(rows, cols, i+1)
         
-    def plot_images(images, labels, classes, normalize = True):
+        image = images[i]
 
-        n_images = len(images)
+        if normalize:
+            image = normalize_image(image)
 
-        rows = int(np.sqrt(n_images))
-        cols = int(np.sqrt(n_images))
+        ax.imshow(image.permute(1, 2, 0).cpu().numpy())
+        label = classes[labels[i]]
+        ax.set_title(label)
+        ax.axis('off')
+    plt.show()
 
-        fig = plt.figure(figsize = (15, 15))
 
-        for i in range(rows*cols):
-
-            ax = fig.add_subplot(rows, cols, i+1)
+class ResNet(nn.Module):
+    def __init__(self, config, output_dim):
+        super().__init__()
+                
+        block, n_blocks, channels = config
+        self.in_channels = channels[0]
             
-            image = images[i]
-
-            if normalize:
-                image = normalize_image(image)
-
-            ax.imshow(image.permute(1, 2, 0).cpu().numpy())
-            label = classes[labels[i]]
-            ax.set_title(label)
-            ax.axis('off')
+        assert len(n_blocks) == len(channels) == 4
         
+        self.conv1 = nn.Conv2d(3, self.in_channels, kernel_size = 7, stride = 2, padding = 3, bias = False)
+        self.bn1 = nn.BatchNorm2d(self.in_channels)
+        self.relu = nn.ReLU(inplace = True)
+        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1)
+        
+        self.layer1 = self.get_resnet_layer(block, n_blocks[0], channels[0])
+        self.layer2 = self.get_resnet_layer(block, n_blocks[1], channels[1], stride = 2)
+        self.layer3 = self.get_resnet_layer(block, n_blocks[2], channels[2], stride = 2)
+        self.layer4 = self.get_resnet_layer(block, n_blocks[3], channels[3], stride = 2)
+        
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.fc = nn.Linear(self.in_channels, output_dim)
+        
+    def get_resnet_layer(self, block, n_blocks, channels, stride = 1):
+    
+        layers = []
+        
+        if self.in_channels != block.expansion * channels:
+            downsample = True
+        else:
+            downsample = False
+        
+        layers.append(block(self.in_channels, channels, stride, downsample))
+        
+        for i in range(1, n_blocks):
+            layers.append(block(block.expansion * channels, channels))
+
+        self.in_channels = block.expansion * channels
+            
+        return nn.Sequential(*layers)
+        
+    def forward(self, x):
+        
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        
+        x = self.avgpool(x)
+        h = x.view(x.shape[0], -1)
+        x = self.fc(h)
+        
+        return x, h
+
+    
 
 
 if __name__ == "__main__":
@@ -281,7 +344,7 @@ if __name__ == "__main__":
         global_vars["STDS"] = stds
         
     if args.train:
-        prepare_training()
+        prepare_training(train_dir, test_dir)
     
     
    
