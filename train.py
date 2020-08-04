@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import torch.optim.lr_scheduler as lr_scheduler
+from torch.optim.lr_scheduler import _LRScheduler
 import torchvision.transforms as transforms
 import torch.utils.data as data
 
@@ -129,7 +129,8 @@ def prepare_training(train_dir, test_dir):
     test_data = datasets.ImageFolder(root = test_dir, 
                                  transform = test_transforms)
                                  
-                                 
+    test_data.classes = [format_label(c) for c in test_data.classes]
+    
     #create the validation set
     VALID_RATIO = 0.9
 
@@ -140,10 +141,7 @@ def prepare_training(train_dir, test_dir):
                                                [n_train_examples, n_valid_examples])
                                                
     valid_data = copy.deepcopy(valid_data) #deepcopy to stop this also changing the training data transforms
-    
-    #POURQUOI ????????????????????????????????????????????????????????????
     valid_data.dataset.transform = test_transforms 
-    #POURQUOI ????????????????????????????????????????????????????????????
     
     BATCH_SIZE = 64
 
@@ -157,12 +155,40 @@ def prepare_training(train_dir, test_dir):
     test_iterator = data.DataLoader(test_data, 
                                     batch_size = BATCH_SIZE)
     #show_img(train_data, test_data)
-
+    
     ResNetConfig = namedtuple('ResNetConfig', ['block', 'n_blocks', 'channels'])
-    resnet152_config = ResNetConfig(block = Bottleneck,
+    
+    if MODEL == "resnet18":
+        resnet_config = ResNetConfig(block = BasicBlock,
+                                n_blocks = [2, 2, 2, 2],
+                                channels = [64, 128, 256, 512])
+        pretrained_model = models.resnet18(pretrained = True)
+    elif MODEL == "resnet34":
+        resnet_config = ResNetConfig(block = BasicBlock,
+                                n_blocks = [3, 4, 6, 3],
+                                channels = [64, 128, 256, 512])
+        pretrained_model = models.resnet34(pretrained = True)
+    elif MODEL == "resnet50":
+        resnet_config = ResNetConfig(block = Bottleneck,
+                                n_blocks = [3, 4, 6, 3],
+                                channels = [64, 128, 256, 512])
+        pretrained_model = models.resnet50(pretrained = True)
+    elif MODEL == "resnet101":
+        resnet_config = ResNetConfig(block = Bottleneck,
+                                n_blocks = [3, 4, 23, 3],
+                                channels = [64, 128, 256, 512])
+        pretrained_model = models.resnet101(pretrained = True)
+    elif MODEL == "resnet152":
+        resnet_config = ResNetConfig(block = Bottleneck,
                                 n_blocks = [3, 8, 36, 3],
                                 channels = [64, 128, 256, 512])
-    pretrained_model = models.resnet152(pretrained = True)
+        pretrained_model = models.resnet152(pretrained = True)
+    else:
+        resnet_config = ResNetConfig(block = Bottleneck,
+                                n_blocks = [3, 8, 36, 3],
+                                channels = [64, 128, 256, 512])
+        pretrained_model = models.resnet152(pretrained = True)
+    
 
     IN_FEATURES = pretrained_model.fc.in_features 
     OUTPUT_DIM = len(test_data.classes)
@@ -171,11 +197,36 @@ def prepare_training(train_dir, test_dir):
 
     pretrained_model.fc = fc
 
-    model = ResNet(resnet152_config, OUTPUT_DIM)
+    model = ResNet(resnet_config, OUTPUT_DIM)
     model.load_state_dict(pretrained_model.state_dict())
 
     print(f'The model has {count_parameters(model):,} trainable parameters')
+    
+    
+    #find learning rate
+    START_LR = 1e-7
 
+    optimizer = optim.Adam(model.parameters(), lr=START_LR)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    criterion = nn.CrossEntropyLoss()
+
+    model = model.to(device)
+    criterion = criterion.to(device)
+    
+    #define learning rate finder and run the range test.
+    END_LR = 10
+    NUM_ITER = 100
+
+    lr_finder = LRFinder(model, optimizer, criterion, device)
+    lrs, losses = lr_finder.range_test(train_iterator, END_LR, NUM_ITER)
+    
+    plot_lr_finder(lrs, losses, skip_start = 30, skip_end = 30)
+    
+def format_label(label):
+    label = label.split('_')[1]#takes only the superclass
+    return label
 
 def show_img(train_data, test_data): 
     N_IMAGES = 25
@@ -183,6 +234,8 @@ def show_img(train_data, test_data):
     images, labels = zip(*[(image, label) for image, label in 
                                [train_data[i] for i in range(N_IMAGES)]])
 
+
+    test_data.classes = [format_label(c) for c in test_data.classes]
     classes = test_data.classes
     plot_images(images, labels, classes)
 
@@ -215,67 +268,6 @@ def plot_images(images, labels, classes, normalize = True):
         ax.set_title(label)
         ax.axis('off')
     plt.show()
-
-
-class ResNet(nn.Module):
-    def __init__(self, config, output_dim):
-        super().__init__()
-                
-        block, n_blocks, channels = config
-        self.in_channels = channels[0]
-            
-        assert len(n_blocks) == len(channels) == 4
-        
-        self.conv1 = nn.Conv2d(3, self.in_channels, kernel_size = 7, stride = 2, padding = 3, bias = False)
-        self.bn1 = nn.BatchNorm2d(self.in_channels)
-        self.relu = nn.ReLU(inplace = True)
-        self.maxpool = nn.MaxPool2d(kernel_size = 3, stride = 2, padding = 1)
-        
-        self.layer1 = self.get_resnet_layer(block, n_blocks[0], channels[0])
-        self.layer2 = self.get_resnet_layer(block, n_blocks[1], channels[1], stride = 2)
-        self.layer3 = self.get_resnet_layer(block, n_blocks[2], channels[2], stride = 2)
-        self.layer4 = self.get_resnet_layer(block, n_blocks[3], channels[3], stride = 2)
-        
-        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = nn.Linear(self.in_channels, output_dim)
-        
-    def get_resnet_layer(self, block, n_blocks, channels, stride = 1):
-    
-        layers = []
-        
-        if self.in_channels != block.expansion * channels:
-            downsample = True
-        else:
-            downsample = False
-        
-        layers.append(block(self.in_channels, channels, stride, downsample))
-        
-        for i in range(1, n_blocks):
-            layers.append(block(block.expansion * channels, channels))
-
-        self.in_channels = block.expansion * channels
-            
-        return nn.Sequential(*layers)
-        
-    def forward(self, x):
-        
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        
-        x = self.avgpool(x)
-        h = x.view(x.shape[0], -1)
-        x = self.fc(h)
-        
-        return x, h
-
-    
 
 
 if __name__ == "__main__":
@@ -335,6 +327,7 @@ if __name__ == "__main__":
     # Checking if gpu is available
     global_vars["DEVICE"] = torch.device("cuda:0" if torch.cuda.is_available() and args.gpu == 'y' else "cpu")
     global_vars["DATA_PATH"] = args.path
+    global_vars["MODEL"] = args.model
 
     # Kiode bizarre - for reproducability
     SEED = 1234
