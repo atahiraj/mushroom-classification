@@ -5,7 +5,8 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import _LRScheduler
 import torchvision.transforms as transforms
 import torch.utils.data as data
-
+import torch.optim.lr_scheduler as lr_scheduler
+from torch.optim.lr_scheduler import _LRScheduler
 import torchvision.datasets as datasets
 import torchvision.models as models
 
@@ -39,8 +40,81 @@ from utils import measure_time
 from model import *
 
     
-def train():
-    pass
+def train(model, iterator, optimizer, criterion, scheduler, device):
+    
+    epoch_loss = 0
+    epoch_acc_1 = 0
+    epoch_acc_5 = 0
+    
+    model.train()
+    i = 0
+    for (x, y) in iterator:
+        i += 1
+        print(i)
+        print(len(iterator))
+        x = x.to(device)
+        y = y.to(device)
+        
+        optimizer.zero_grad()
+                
+        y_pred, _ = model(x)
+        
+        loss = criterion(y_pred, y)
+        
+        acc_1, acc_5 = calculate_topk_accuracy(y_pred, y)
+        
+        loss.backward()
+        
+        optimizer.step()
+        
+        scheduler.step()
+        
+        epoch_loss += loss.item()
+        epoch_acc_1 += acc_1.item()
+        epoch_acc_5 += acc_5.item()
+        
+    epoch_loss /= len(iterator)
+    epoch_acc_1 /= len(iterator)
+    epoch_acc_5 /= len(iterator)
+        
+    return epoch_loss, epoch_acc_1, epoch_acc_5
+
+def evaluate(model, iterator, criterion, device):
+    
+    epoch_loss = 0
+    epoch_acc_1 = 0
+    epoch_acc_5 = 0
+    
+    model.eval()
+    
+    with torch.no_grad():
+        
+        for (x, y) in iterator:
+
+            x = x.to(device)
+            y = y.to(device)
+
+            y_pred, _ = model(x)
+
+            loss = criterion(y_pred, y)
+
+            acc_1, acc_5 = calculate_topk_accuracy(y_pred, y)
+
+            epoch_loss += loss.item()
+            epoch_acc_1 += acc_1.item()
+            epoch_acc_5 += acc_5.item()
+        
+    epoch_loss /= len(iterator)
+    epoch_acc_1 /= len(iterator)
+    epoch_acc_5 /= len(iterator)
+        
+    return epoch_loss, epoch_acc_1, epoch_acc_5
+
+def epoch_time(start_time, end_time):
+    elapsed_time = end_time - start_time
+    elapsed_mins = int(elapsed_time / 60)
+    elapsed_secs = int(elapsed_time - (elapsed_mins * 60))
+    return elapsed_mins, elapsed_secs
 
 def split_dataset(source_path, destination_path, test_dir_name, train_dir_name):
     TRAIN_RATIO = 0.8
@@ -143,8 +217,6 @@ def prepare_training(train_dir, test_dir):
     valid_data = copy.deepcopy(valid_data) #deepcopy to stop this also changing the training data transforms
     valid_data.dataset.transform = test_transforms 
     
-    BATCH_SIZE = 64
-
     train_iterator = data.DataLoader(train_data, 
                                      shuffle = True, 
                                      batch_size = BATCH_SIZE)
@@ -208,22 +280,89 @@ def prepare_training(train_dir, test_dir):
 
     optimizer = optim.Adam(model.parameters(), lr=START_LR)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
     criterion = nn.CrossEntropyLoss()
 
-    model = model.to(device)
-    criterion = criterion.to(device)
+    model = model.to(DEVICE)
+    criterion = criterion.to(DEVICE)
     
     #define learning rate finder and run the range test.
     END_LR = 10
     NUM_ITER = 100
 
-    lr_finder = LRFinder(model, optimizer, criterion, device)
-    lrs, losses = lr_finder.range_test(train_iterator, END_LR, NUM_ITER)
+    #lr_finder = LRFinder(model, optimizer, criterion, DEVICE)
+    #lrs, losses = lr_finder.range_test(train_iterator, END_LR, NUM_ITER)
     
-    plot_lr_finder(lrs, losses, skip_start = 30, skip_end = 30)
+    #plot_lr_finder(lrs, losses, skip_start = 30, skip_end = 30)
+
+
+    FOUND_LR = 1e-3
+
+    params = [
+        {'params': model.conv1.parameters(), 'lr': FOUND_LR / 10},
+        {'params': model.bn1.parameters(), 'lr': FOUND_LR / 10},
+        {'params': model.layer1.parameters(), 'lr': FOUND_LR / 8},
+        {'params': model.layer2.parameters(), 'lr': FOUND_LR / 6},
+        {'params': model.layer3.parameters(), 'lr': FOUND_LR / 4},
+        {'params': model.layer4.parameters(), 'lr': FOUND_LR / 2},
+        {'params': model.fc.parameters()}
+    ]
+
+    optimizer = optim.Adam(params, lr = FOUND_LR)
     
+    EPOCHS = 1
+    STEPS_PER_EPOCH = len(train_iterator)
+    TOTAL_STEPS = EPOCHS * STEPS_PER_EPOCH
+
+    MAX_LRS = [p['lr'] for p in optimizer.param_groups]
+
+    scheduler = lr_scheduler.OneCycleLR(optimizer,
+                                        max_lr = MAX_LRS,
+                                        total_steps = TOTAL_STEPS)
+    
+    
+
+    best_valid_loss = float('inf')
+    """
+    for epoch in range(EPOCHS):
+        
+        start_time = time.time()
+        
+        train_loss, train_acc_1, train_acc_5 = train(model, train_iterator, optimizer, criterion, scheduler, DEVICE)
+        valid_loss, valid_acc_1, valid_acc_5 = evaluate(model, valid_iterator, criterion, DEVICE)
+            
+        if valid_loss < best_valid_loss:
+            best_valid_loss = valid_loss
+            torch.save(model.state_dict(), 'tut5-model.pt')
+
+        end_time = time.time()
+
+        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+        
+        print(f'Epoch: {epoch+1:02} | Epoch Time: {epoch_mins}m {epoch_secs}s')
+        print(f'\tTrain Loss: {train_loss:.3f} | Train Acc @1: {train_acc_1*100:6.2f}% | ' \
+            f'Train Acc @5: {train_acc_5*100:6.2f}%')
+        print(f'\tValid Loss: {valid_loss:.3f} | Valid Acc @1: {valid_acc_1*100:6.2f}% | ' \
+            f'Valid Acc @5: {valid_acc_5*100:6.2f}%')
+    """
+    model.load_state_dict(torch.load('tut5-model.pt'))
+
+    test_loss, test_acc_1, test_acc_5 = evaluate(model, test_iterator, criterion, DEVICE)
+
+    print(f'Test Loss: {test_loss:.3f} | Test Acc @1: {test_acc_1*100:6.2f}% | ' \
+        f'Test Acc @5: {test_acc_5*100:6.2f}%')
+
+def calculate_topk_accuracy(y_pred, y, k = 5):
+    with torch.no_grad():
+        batch_size = y.shape[0]
+        _, top_pred = y_pred.topk(k, 1)
+        top_pred = top_pred.t()
+        correct = top_pred.eq(y.view(1, -1).expand_as(top_pred))
+        correct_1 = correct[:1].view(-1).float().sum(0, keepdim = True)
+        correct_k = correct[:k].view(-1).float().sum(0, keepdim = True)
+        acc_1 = correct_1 / batch_size
+        acc_k = correct_k / batch_size
+    return acc_1, acc_k
+
 def format_label(label):
     label = label.split('_')[1]#takes only the superclass
     return label
@@ -328,6 +467,7 @@ if __name__ == "__main__":
     global_vars["DEVICE"] = torch.device("cuda:0" if torch.cuda.is_available() and args.gpu == 'y' else "cpu")
     global_vars["DATA_PATH"] = args.path
     global_vars["MODEL"] = args.model
+    global_vars["BATCH_SIZE"] = args.batch
 
     # Kiode bizarre - for reproducability
     SEED = 1234
@@ -360,5 +500,3 @@ if __name__ == "__main__":
     if args.train:
         prepare_training(train_dir, test_dir)
     
-    
-   

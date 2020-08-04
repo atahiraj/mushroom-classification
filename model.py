@@ -185,7 +185,7 @@ class LRFinder:
         iterator = IteratorWrapper(iterator)
         
         for iteration in range(num_iter):
-
+            print(iteration)
             loss = self._train_batch(iterator)
 
             #update lr
@@ -206,7 +206,7 @@ class LRFinder:
                 break
                        
         #reset model to initial parameters
-        model.load_state_dict(torch.load('init_params.pt'))
+        self.model.load_state_dict(torch.load('init_params.pt'))
                     
         return lrs, losses
 
